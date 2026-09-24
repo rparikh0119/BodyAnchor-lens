@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=600, height=600, initial-scale=1">
+<title>Body Anchor</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='5' fill='%234FD8E8'/></svg>">
+<style>
+  /* Black is transparent on the additive display. Never use a light background. */
+  *{box-sizing:border-box;margin:0;padding:0}
+  [hidden]{display:none !important}
+  html,body{width:600px;height:600px;overflow:hidden;background:#000;
+    color:#EAF6F8;font:16px/1.4 ui-monospace,"SF Mono",Menlo,Consolas,monospace}
+  #app{width:600px;height:600px;padding:28px;display:flex;flex-direction:column}
+
+  header{border-bottom:1px solid #1E3238;padding-bottom:12px;margin-bottom:18px}
+  h1{font-size:15px;letter-spacing:.24em;font-weight:600;color:#fff}
+  header p{font-size:12px;letter-spacing:.12em;color:#6E8B93;margin-top:4px}
+
+  ul{list-style:none;flex:1;display:flex;flex-direction:column;gap:10px}
+  li{border:1px solid #1E3238;padding:14px 16px;display:flex;
+    justify-content:space-between;align-items:center;gap:12px}
+  /* Focus has to be unmissable at arm's length on a transparent display. */
+  li.focusable:focus{outline:none;border-color:#4FD8E8;background:#062229;
+    box-shadow:0 0 0 1px #4FD8E8, 0 0 22px rgba(79,216,232,.45)}
+  .id{color:#4FD8E8;font-size:13px;letter-spacing:.14em;font-weight:600}
+  .nm{flex:1;font-size:15px;letter-spacing:.04em;color:#fff;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .mm{font-size:15px;color:#F2B279;font-variant-numeric:tabular-nums}
+
+  footer{border-top:1px solid #1E3238;padding-top:12px;margin-top:18px;
+    font-size:12px;letter-spacing:.1em;color:#6E8B93;display:flex;justify-content:space-between}
+
+  /* detail view */
+  #detail{flex:1;display:flex;flex-direction:column;justify-content:center;gap:16px}
+  #detail .big{font-size:60px;color:#F2B279;font-variant-numeric:tabular-nums;line-height:1}
+  #detail .lbl{font-size:15px;letter-spacing:.1em;color:#fff}
+  #detail .sub{font-size:13px;color:#6E8B93;letter-spacing:.08em}
+  #detail .addr{font-size:13px;color:#4FD8E8;letter-spacing:.08em}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>BODY ANCHOR</h1>
+    <p id="sub">FOREARM_L &middot; 3 ANCHORS &middot; CAPTURE 12</p>
+  </header>
+
+  <ul id="list">
+    <li class="focusable" tabindex="0" data-i="0">
+      <span class="id">A01</span><span class="nm">Laceration, volar mid</span><span class="mm">7mm</span>
+    </li>
+    <li class="focusable" tabindex="0" data-i="1">
+      <span class="id">A02</span><span class="nm">Edema margin</span><span class="mm">0mm</span>
+    </li>
+    <li class="focusable" tabindex="0" data-i="2">
+      <span class="id">A03</span><span class="nm">Radial pulse point</span><span class="mm">&mdash;</span>
+    </li>
+  </ul>
+
+  <div id="detail" hidden>
+    <div class="lbl" id="dName"></div>
+    <div class="big" id="dBig"></div>
+    <div class="sub" id="dSub"></div>
+    <div class="addr" id="dAddr"></div>
+  </div>
+
+  <footer><span id="hint">&uarr;&darr; select &middot; pinch to open</span><span>SUBJECT_01</span></footer>
+</div>
+
+<script>
+var DATA = [
+  {n:"Laceration, volar mid", big:"7mm", sub:"was 41mm on 08.04 · down 83%", addr:"tri 3028 · 0.29 0.44 0.27"},
+  {n:"Edema margin",          big:"0mm", sub:"resolved 09.09 · tracked 5 weeks", addr:"tri 2303 · 0.20 0.28 0.52"},
+  {n:"Radial pulse point",    big:"—", sub:"landmark · transfers across subjects", addr:"tri 4875 · 0.52 0.23 0.25"}
+];
+var items = [].slice.call(document.querySelectorAll(".focusable"));
+var list = document.getElementById("list");
+var detail = document.getElementById("detail");
+var hint = document.getElementById("hint");
+var idx = 0, open = false;
+
+function focusAt(i){
+  idx = (i + items.length) % items.length;
+  items[idx].focus();
+}
+function show(){
+  var d = DATA[idx];
+  document.getElementById("dName").textContent = d.n;
+  document.getElementById("dBig").textContent = d.big;
+  document.getElementById("dSub").textContent = d.sub;
+  document.getElementById("dAddr").textContent = d.addr;
+  list.hidden = true; detail.hidden = false; open = true;
+  hint.innerHTML = "hold to go back";
+}
+function back(){
+  list.hidden = false; detail.hidden = true; open = false;
+  hint.innerHTML = "&uarr;&darr; select &middot; pinch to open";
+  focusAt(idx);
+}
+
+// The EMG wristband sends arrow keys, Enter for pinch, Escape for hold-to-back.
+window.addEventListener("keydown", function(e){
+  if(e.key === "ArrowDown"){ if(!open) focusAt(idx+1); e.preventDefault(); }
+  else if(e.key === "ArrowUp"){ if(!open) focusAt(idx-1); e.preventDefault(); }
+  else if(e.key === "Enter"){ if(!open) show(); e.preventDefault(); }
+  else if(e.key === "Escape"){ if(open) back(); e.preventDefault(); }
+});
+focusAt(0);
+</script>
+</body>
+</html>
