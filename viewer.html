@@ -1,269 +1,244 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=600, height=600, initial-scale=1">
-<title>Body Anchor Viewer</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><circle cx='8' cy='8' r='5' fill='%234FD8E8'/></svg>">
+<meta name="viewport" content="width=600, initial-scale=1">
+<title>Body Anchor</title>
 <style>
-  *{box-sizing:border-box;margin:0;padding:0}
-  [hidden]{display:none !important}
-  html,body{width:600px;height:600px;overflow:hidden;background:#000;
-    color:#EAF6F8;font:15px/1.4 ui-monospace,"SF Mono",Menlo,Consolas,monospace}
-  #stage{position:relative;width:600px;height:600px}
-  canvas{display:block;width:600px;height:600px}
-
-  .hud{position:absolute;pointer-events:none}
-  #top{top:24px;left:26px}
-  #top h1{font-size:14px;letter-spacing:.22em;font-weight:600;color:#fff}
-  #top p{font-size:11px;letter-spacing:.12em;color:#7F9AA2;margin-top:3px}
-
-  #sel{bottom:74px;left:26px;right:26px}
-  #sel .id{font-size:12px;letter-spacing:.16em;color:#4FD8E8;font-weight:600}
-  #sel .nm{font-size:19px;color:#fff;letter-spacing:.02em;margin-top:2px}
-  #sel .mm{font-size:13px;color:#F2B279;margin-top:3px;font-variant-numeric:tabular-nums}
-
-  #bar{bottom:24px;left:26px;right:26px;display:flex;justify-content:space-between;
-    font-size:11px;letter-spacing:.1em;color:#7F9AA2}
-  #bar b{color:#4FD8E8;font-weight:400}
-
-  /* keyboard target: the whole stage takes D-pad focus */
-  #stage.focusable:focus{outline:none}
-  #stage.focusable:focus-visible::after{content:"";position:absolute;inset:2px;
-    border:1px solid #4FD8E8;pointer-events:none}
+  html,body{margin:0;padding:0;background:#000;overflow:hidden;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;}
+  #stage{position:relative;width:600px;height:600px;margin:0 auto;background:#000;}
+  canvas{display:block;width:600px;height:600px;}
+  .hud{position:absolute;color:#7fe9e0;font-size:13px;line-height:1.5;
+    letter-spacing:.02em;text-shadow:0 0 6px rgba(0,255,230,.35);}
+  #tl{top:10px;left:12px;}
+  #tr{top:10px;right:12px;text-align:right;}
+  #bl{bottom:10px;left:12px;max-width:360px;}
+  #br{bottom:10px;right:12px;text-align:right;color:#4d8f8a;font-size:11px;}
+  .k{color:#3f7d78;}
+  .hi{color:#ffd34d;text-shadow:0 0 8px rgba(255,200,60,.5);}
+  .warn{color:#ff8a5c;}
+  .focusable:focus{outline:none;}
 </style>
 </head>
 <body>
-<div id="stage" class="focusable" tabindex="0">
+<div id="stage">
   <canvas id="c" width="600" height="600"></canvas>
-
-  <div class="hud" id="top">
-    <h1>BODY ANCHOR</h1>
-    <p>FOREARM_L &middot; SUBJECT_01 &middot; CAPTURE 12</p>
-  </div>
-
-  <div class="hud" id="sel">
-    <div class="id" id="sId">A01</div>
-    <div class="nm" id="sNm">Laceration, volar mid</div>
-    <div class="mm" id="sMm">7mm &middot; tri 3028</div>
-  </div>
-
-  <div class="hud" id="bar">
-    <span>&larr;&rarr; rotate &middot; &uarr;&darr; anchor &middot; <b>pinch</b> to flex</span>
-    <span id="fps">--</span>
-  </div>
+  <div class="hud" id="tl"></div>
+  <div class="hud" id="tr"></div>
+  <div class="hud" id="bl"></div>
+  <div class="hud" id="br"></div>
 </div>
-
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="armdata.js"></script>
 <script>
-"use strict";
-var TAU = Math.PI * 2;
+(function(){
+  "use strict";
+  var D = window.ARM;
+  if(!D){ document.getElementById('tl').innerHTML='<span class="warn">armdata.js not loaded</span>'; return; }
 
-/* ---- topology (same constants as the desktop viewer) ---- */
-var SEG = 72, RING = 40, VW = RING + 1;
-var TRIS = SEG * RING * 2;
-var indices = new Uint32Array(TRIS * 3);
-(function(){ var k = 0;
-  for (var i = 0; i < SEG; i++) for (var j = 0; j < RING; j++) {
-    var a=i*VW+j, b=i*VW+j+1, c=(i+1)*VW+j, d=(i+1)*VW+j+1;
-    indices[k++]=a; indices[k++]=c; indices[k++]=b;
-    indices[k++]=b; indices[k++]=c; indices[k++]=d;
-  }})();
-function addressFromTPhi(t, phi){
-  t = Math.min(0.9999, Math.max(0, t));
-  var pr = ((phi % TAU) + TAU) % TAU;
-  var fi = t*SEG, i = Math.floor(fi), u = fi - i;
-  var fj = pr/TAU*RING, j = Math.floor(fj), v = fj - j;
-  if (i>=SEG){i=SEG-1;u=1;} if (j>=RING){j=RING-1;v=1;}
-  var q = i*RING + j;
-  if (u+v <= 1) return {tri:2*q,   bary:[1-u-v, u, v]};
-  return             {tri:2*q+1, bary:[1-u, 1-v, u+v-1]};
-}
-function resolve3(out, o, pos, tri, w){
-  var t3=tri*3, i0=indices[t3]*3, i1=indices[t3+1]*3, i2=indices[t3+2]*3;
-  out[o]   = pos[i0]*w[0]   + pos[i1]*w[1]   + pos[i2]*w[2];
-  out[o+1] = pos[i0+1]*w[0] + pos[i1+1]*w[1] + pos[i2+1]*w[2];
-  out[o+2] = pos[i0+2]*w[0] + pos[i1+2]*w[1] + pos[i2+2]*w[2];
-}
+  function f32(b64){
+    var s=atob(b64), n=s.length, u=new Uint8Array(n);
+    for(var i=0;i<n;i++) u[i]=s.charCodeAt(i);
+    return new Float32Array(u.buffer);
+  }
+  function u16(b64){
+    var s=atob(b64), n=s.length, u=new Uint8Array(n);
+    for(var i=0;i<n;i++) u[i]=s.charCodeAt(i);
+    return new Uint16Array(u.buffer);
+  }
 
-/* ---- shape ---- */
-var PROF=[[0,.126],[.16,.117],[.28,.101],[.38,.103],[.50,.109],[.62,.099],[.74,.080],[.86,.059],[.94,.051],[1,.050]];
-function baseR(t){
-  for (var i=1;i<PROF.length;i++){ if (t<=PROF[i][0]){
-    var a=PROF[i-1], b=PROF[i], k=(t-a[0])/(b[0]-a[0]); k=k*k*(3-2*k);
-    return a[1]+(b[1]-a[1])*k; } }
-  return PROF[PROF.length-1][1];
-}
-function domeK(t){
-  var k=1;
-  if (t<.05)  k=Math.sqrt(Math.max(0,1-Math.pow((.05-t)/.05,2)))*.97+.03;
-  if (t>.955) k=Math.min(k, Math.sqrt(Math.max(0,1-Math.pow((t-.955)/.045,2)))*.97+.03);
-  return k;
-}
-var bendW = new Float32Array(SEG+1);
-(function(){ var s=0,i;
-  for(i=0;i<=SEG;i++){var t=i/SEG; bendW[i]=Math.exp(-Math.pow((t-.34)/.085,2)); s+=bendW[i];}
-  for(i=0;i<=SEG;i++) bendW[i]/=s; })();
-var stX=new Float32Array(SEG+1), stY=new Float32Array(SEG+1), stA=new Float32Array(SEG+1);
-function stations(bendDeg){
-  var ang=0, x=-0.50, y=-0.05, dl=1/SEG, bend=bendDeg*Math.PI/180;
-  for(var i=0;i<=SEG;i++){ stX[i]=x; stY[i]=y; stA[i]=ang;
-    ang += bend*bendW[i]; x += Math.cos(ang)*dl; y += Math.sin(ang)*dl; }
-}
-var pos = new Float32Array((SEG+1)*VW*3);
-function surface(){
-  for(var i=0;i<=SEG;i++){
-    var t=i/SEG, a=stA[i], bx=Math.sin(a), by=-Math.cos(a);
-    var r0=baseR(t)*domeK(t), px=stX[i], py=stY[i];
-    for(var j=0;j<=RING;j++){
-      var phi=(j%RING)/RING*TAU, cx=Math.cos(phi), sx=Math.sin(phi);
-      var o=(i*VW+j)*3;
-      pos[o]=px+r0*sx*bx; pos[o+1]=py+r0*sx*by; pos[o+2]=r0*cx;
+  var POSE_KEYS = Object.keys(D.poses);
+  var POSES = POSE_KEYS.map(function(k){ return f32(D.poses[k]); });
+  var NAMES = POSE_KEYS.map(function(k){ return D.poseNames[k]; });
+  var IDX   = u16(D.index);
+  var NV    = D.verts;
+
+  // live vertex buffer, rebuilt each frame from the pose blend
+  var CUR = new Float32Array(NV*3);
+
+  var state = {
+    poseFrom: 0, poseTo: 0, blend: 1,   // blend 1 means fully at poseTo
+    yaw: 0.35, pitch: -0.12,
+    anchor: 0,
+    spin: true
+  };
+
+  // ---- anchor resolve: triangle index + barycentric weights, every frame ----
+  // Nothing stores an XYZ. Position is always derived from the live buffer.
+  function resolve(a, out){
+    var t = a.triLocal, b = a.bary;
+    var i0=t[0]*3, i1=t[1]*3, i2=t[2]*3;
+    out[0] = CUR[i0  ]*b[0] + CUR[i1  ]*b[1] + CUR[i2  ]*b[2];
+    out[1] = CUR[i0+1]*b[0] + CUR[i1+1]*b[1] + CUR[i2+1]*b[2];
+    out[2] = CUR[i0+2]*b[0] + CUR[i1+2]*b[1] + CUR[i2+2]*b[2];
+    return out;
+  }
+
+  function buildCur(){
+    var A = POSES[state.poseFrom], B = POSES[state.poseTo], t = state.blend;
+    if(t>=1){ CUR.set(B); return; }
+    if(t<=0){ CUR.set(A); return; }
+    var s = t*t*(3-2*t);           // smoothstep
+    for(var i=0;i<NV*3;i++) CUR[i] = A[i] + (B[i]-A[i])*s;
+  }
+
+  // ---- projection ----
+  var cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  var W=600, H=600, SCALE=225;
+  var proj = new Float32Array(NV*3);   // x, y, depth
+
+  function project(){
+    var cy=Math.cos(state.yaw), sy=Math.sin(state.yaw);
+    var cp=Math.cos(state.pitch), sp=Math.sin(state.pitch);
+    for(var i=0;i<NV;i++){
+      var x=CUR[i*3], y=CUR[i*3+1], z=CUR[i*3+2];
+      var x1 =  x*cy + z*sy;
+      var z1 = -x*sy + z*cy;
+      var y1 =  y*cp - z1*sp;
+      var z2 =  y*sp + z1*cp;
+      proj[i*3]   = W*0.5 + x1*SCALE;
+      proj[i*3+1] = H*0.5 - y1*SCALE;
+      proj[i*3+2] = z2;
     }
   }
-}
+  function projectPoint(p){
+    var cy=Math.cos(state.yaw), sy=Math.sin(state.yaw);
+    var cp=Math.cos(state.pitch), sp=Math.sin(state.pitch);
+    var x1 =  p[0]*cy + p[2]*sy;
+    var z1 = -p[0]*sy + p[2]*cy;
+    var y1 =  p[1]*cp - z1*sp;
+    var z2 =  p[1]*sp + z1*cp;
+    return [W*0.5 + x1*SCALE, H*0.5 - y1*SCALE, z2];
+  }
 
-/* ---- anchors ---- */
-function mk(t,phi,id,nm,mm){ var a=addressFromTPhi(t,phi);
-  return {id:id, nm:nm, mm:mm, tri:a.tri, bary:a.bary}; }
-var anchors = [
-  mk(.52,-0.90,"A01","Laceration, volar mid","7mm · was 41mm"),
-  mk(.40,-1.30,"A02","Edema margin","0mm · resolved"),
-  mk(.84,-0.35,"A03","Radial pulse point","landmark")
-];
-var sel = 0;
+  // ---- draw ----
+  // Additive display: black is transparent, so everything is bright marks on pure black.
+  // No filled surfaces. Points and thin lines only.
+  var tmp=[0,0,0];
+  function draw(){
+    ctx.fillStyle='#000';
+    ctx.fillRect(0,0,W,H);
 
-/* ---- scene: additive display, so lines and points only, no lit mesh ---- */
-var canvas = document.getElementById("c");
-var renderer = new THREE.WebGLRenderer({canvas:canvas, antialias:true, alpha:false});
-renderer.setPixelRatio(1);
-renderer.setSize(600,600,false);
-renderer.setClearColor(0x000000,1);
-var scene = new THREE.Scene();
-var camera = new THREE.PerspectiveCamera(34,1,.05,40);
+    // depth range for brightness
+    var zmin=1e9, zmax=-1e9;
+    for(var i=0;i<NV;i++){ var z=proj[i*3+2]; if(z<zmin)zmin=z; if(z>zmax)zmax=z; }
+    var zr = (zmax-zmin) || 1;
 
-function dotTex(){
-  var c=document.createElement("canvas"); c.width=c.height=32;
-  var g=c.getContext("2d"), gr=g.createRadialGradient(16,16,0,16,16,16);
-  gr.addColorStop(0,"rgba(255,255,255,1)"); gr.addColorStop(.35,"rgba(255,255,255,.7)");
-  gr.addColorStop(1,"rgba(255,255,255,0)");
-  g.fillStyle=gr; g.fillRect(0,0,32,32); return new THREE.CanvasTexture(c);
-}
-var DOT = dotTex();
+    // surface as a point cloud
+    for(var i=0;i<NV;i++){
+      var d = (proj[i*3+2]-zmin)/zr;          // 0 far, 1 near
+      var a = 0.12 + d*0.62;
+      var s = d>0.72 ? 1.7 : 1.1;
+      ctx.fillStyle = 'rgba(90,240,225,'+a.toFixed(3)+')';
+      ctx.fillRect(proj[i*3]-s*0.5, proj[i*3+1]-s*0.5, s, s);
+    }
 
-/* splat cloud, each sample stored as an address */
-var NPTS = 5000;
-var sTri=new Int32Array(NPTS), sW=new Float32Array(NPTS*3);
-(function(){ var s=20260924;
-  function rnd(){ s=(s*1664525+1013904223)&0x7fffffff; return s/0x7fffffff; }
-  for(var p=0;p<NPTS;p++){ sTri[p]=(rnd()*TRIS)|0;
-    var r1=Math.sqrt(rnd()), r2=rnd();
-    sW[p*3]=1-r1; sW[p*3+1]=r1*(1-r2); sW[p*3+2]=r1*r2; } })();
-var ptPos = new Float32Array(NPTS*3);
-var ptGeo = new THREE.BufferGeometry();
-ptGeo.setAttribute("position", new THREE.BufferAttribute(ptPos,3));
-scene.add(new THREE.Points(ptGeo, new THREE.PointsMaterial({
-  size:.011, map:DOT, color:0xF2B279, transparent:true, opacity:1,
-  depthWrite:false, blending:THREE.AdditiveBlending })));
+    // wire lattice, sparse so it reads as structure not a solid
+    ctx.lineWidth=0.5;
+    ctx.strokeStyle='rgba(40,150,150,0.30)';
+    ctx.beginPath();
+    for(var t=0;t<IDX.length;t+=33){
+      var a0=IDX[t]*3, b0=IDX[t+1]*3;
+      if(a0===undefined||b0===undefined) continue;
+      ctx.moveTo(proj[a0],proj[a0+1]);
+      ctx.lineTo(proj[b0],proj[b0+1]);
+    }
+    ctx.stroke();
 
-/* wire lattice */
-var wp=[];
-(function(){
-  for(var i=0;i<=SEG;i+=8) for(var j=0;j<RING;j++) wp.push(i*VW+j, i*VW+j+1);
-  for(var j2=0;j2<RING;j2+=6) for(var i2=0;i2<SEG;i2++) wp.push(i2*VW+j2,(i2+1)*VW+j2);
+    // anchors, resolved live from tri + bary
+    for(var k=0;k<D.anchors.length;k++){
+      var a=D.anchors[k];
+      resolve(a,tmp);
+      var p=projectPoint(tmp);
+      var sel = (k===state.anchor);
+      var col = sel ? '255,211,77' : '255,120,90';
+      ctx.strokeStyle='rgba('+col+',0.95)';
+      ctx.lineWidth = sel?1.6:1.1;
+      var r = sel?9:6;
+      ctx.beginPath(); ctx.arc(p[0],p[1],r,0,6.2832); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(p[0]-r-5,p[1]); ctx.lineTo(p[0]-r+1,p[1]);
+      ctx.moveTo(p[0]+r-1,p[1]); ctx.lineTo(p[0]+r+5,p[1]);
+      ctx.moveTo(p[0],p[1]-r-5); ctx.lineTo(p[0],p[1]-r+1);
+      ctx.moveTo(p[0],p[1]+r-1); ctx.lineTo(p[0],p[1]+r+5);
+      ctx.stroke();
+      if(sel){
+        ctx.fillStyle='rgba(255,211,77,0.95)';
+        ctx.font='11px ui-monospace,monospace';
+        ctx.fillText(a.id, p[0]+r+9, p[1]-r-3);
+      }
+    }
+  }
+
+  function hud(){
+    var a = D.anchors[state.anchor];
+    var poseName = NAMES[state.poseTo];
+    document.getElementById('tl').innerHTML =
+      'BODY ANCHOR <span class="k">/ live resolve</span><br>' +
+      '<span class="k">pose</span> ' + poseName;
+    document.getElementById('tr').innerHTML =
+      '<span class="k">topology</span> MHR<br>' +
+      D.topology.fullVerts.toLocaleString() + ' v <span class="k">/</span> ' +
+      D.topology.fullTris.toLocaleString() + ' tri<br>' +
+      '<span class="k">shown</span> ' + D.verts.toLocaleString() + ' v';
+    var dr = a.driftMm || [];
+    document.getElementById('bl').innerHTML =
+      '<span class="hi">' + a.id + '</span> <span class="k">' + (a.site||'') +
+      (a.alongPct!=null ? ' &middot; ' + a.alongPct + '% wrist to elbow' : '') + '</span><br>' +
+      '<span class="k">tri</span> ' + a.tri +
+      ' <span class="k">bary</span> [' + a.bary.join(', ') + ']<br>' +
+      '<span class="k">drift vs A</span> ' +
+      (dr.length ? dr.map(function(x){return x.toFixed(1)+' mm';}).join(' <span class="k">/</span> ') : 'n/a') +
+      ' <span class="warn">&#9679; provisional</span>';
+    document.getElementById('br').innerHTML =
+      'LEFT RIGHT rotate <br> UP DOWN select anchor <br> ENTER change pose';
+  }
+
+  // ---- input: D-pad only. No Escape anywhere. ----
+  var held = {};
+  window.addEventListener('keydown', function(e){
+    var k=e.key;
+    if(k==='ArrowLeft'||k==='ArrowRight'||k==='ArrowUp'||k==='ArrowDown'||k==='Enter'){
+      e.preventDefault();
+    }
+    if(k==='ArrowLeft'||k==='ArrowRight'){ held[k]=true; state.spin=false; }
+    if(k==='ArrowUp'){   state.anchor=(state.anchor+D.anchors.length-1)%D.anchors.length; hud(); }
+    if(k==='ArrowDown'){ state.anchor=(state.anchor+1)%D.anchors.length; hud(); }
+    if(k==='Enter'){
+      if(state.blend>=1){
+        state.poseFrom = state.poseTo;
+        state.poseTo   = (state.poseTo+1) % POSES.length;
+        state.blend    = 0;
+        hud();
+      }
+    }
+  });
+  window.addEventListener('keyup', function(e){ held[e.key]=false; });
+
+  // ---- loop ----
+  var last=performance.now(), fps=0, acc=0, frames=0;
+  function tick(now){
+    var dt=Math.min((now-last)/1000,0.1); last=now;
+    frames++; acc+=dt;
+    if(acc>=0.5){ fps=Math.round(frames/acc); frames=0; acc=0; }
+
+    if(held['ArrowLeft'])  state.yaw -= dt*1.6;
+    if(held['ArrowRight']) state.yaw += dt*1.6;
+    if(state.spin)         state.yaw += dt*0.25;
+    if(state.blend<1){ state.blend = Math.min(1, state.blend + dt*0.9); }
+
+    buildCur();
+    project();
+    draw();
+
+    ctx.fillStyle='rgba(60,130,130,0.8)';
+    ctx.font='10px ui-monospace,monospace';
+    ctx.fillText(fps+' fps', 278, 592);
+
+    requestAnimationFrame(tick);
+  }
+  buildCur(); hud(); requestAnimationFrame(tick);
 })();
-var wPos = new Float32Array(wp.length*3);
-var wGeo = new THREE.BufferGeometry();
-wGeo.setAttribute("position", new THREE.BufferAttribute(wPos,3));
-scene.add(new THREE.LineSegments(wGeo, new THREE.LineBasicMaterial({
-  color:0x4FD8E8, transparent:true, opacity:.22, depthWrite:false,
-  blending:THREE.AdditiveBlending })));
-
-/* anchors */
-var aPos = new Float32Array(anchors.length*3);
-var aGeo = new THREE.BufferGeometry();
-aGeo.setAttribute("position", new THREE.BufferAttribute(aPos,3));
-scene.add(new THREE.Points(aGeo, new THREE.PointsMaterial({
-  size:9, map:DOT, color:0x8FF0FA, transparent:true, opacity:.9,
-  sizeAttenuation:false, depthWrite:false, blending:THREE.AdditiveBlending })));
-var selPos = new Float32Array(3);
-var selGeo = new THREE.BufferGeometry();
-selGeo.setAttribute("position", new THREE.BufferAttribute(selPos,3));
-scene.add(new THREE.Points(selGeo, new THREE.PointsMaterial({
-  size:34, map:DOT, color:0x4FD8E8, transparent:true, opacity:.85,
-  sizeAttenuation:false, depthWrite:false, blending:THREE.AdditiveBlending })));
-
-/* ---- input: arrow keys and Enter, which is what the band sends ---- */
-var theta = 0.34, bendTarget = 0, bend = 0;
-window.addEventListener("keydown", function(e){
-  if (e.key === "ArrowLeft"){ theta -= 0.22; e.preventDefault(); }
-  else if (e.key === "ArrowRight"){ theta += 0.22; e.preventDefault(); }
-  else if (e.key === "ArrowUp"){ sel = (sel-1+anchors.length)%anchors.length; label(); e.preventDefault(); }
-  else if (e.key === "ArrowDown"){ sel = (sel+1)%anchors.length; label(); e.preventDefault(); }
-  else if (e.key === "Enter"){ bendTarget = bendTarget > 60 ? 0 : 105; e.preventDefault(); }
-  else if (e.key === "Escape"){ theta = 0.34; bendTarget = 0; e.preventDefault(); }
-});
-function label(){
-  var a = anchors[sel];
-  document.getElementById("sId").textContent = a.id;
-  document.getElementById("sNm").textContent = a.nm;
-  document.getElementById("sMm").textContent = a.mm + " · tri " + a.tri;
-}
-label();
-document.getElementById("stage").focus();
-
-/* ---- frame ---- */
-var target = new THREE.Vector3();
-var fpsEl = document.getElementById("fps");
-var frames = 0, t0 = performance.now();
-
-function tick(){
-  requestAnimationFrame(tick);
-  bend += (bendTarget - bend) * 0.12;
-
-  stations(bend);
-  surface();
-
-  var i;
-  for(i=0;i<NPTS;i++) resolve3(ptPos, i*3, pos, sTri[i], [sW[i*3],sW[i*3+1],sW[i*3+2]]);
-  ptGeo.attributes.position.needsUpdate = true;
-  ptGeo.computeBoundingSphere();
-
-  for(i=0;i<wp.length;i++){ var vi=wp[i]*3, o=i*3;
-    wPos[o]=pos[vi]; wPos[o+1]=pos[vi+1]; wPos[o+2]=pos[vi+2]; }
-  wGeo.attributes.position.needsUpdate = true;
-  wGeo.computeBoundingSphere();
-
-  for(i=0;i<anchors.length;i++){
-    resolve3(aPos, i*3, pos, anchors[i].tri, anchors[i].bary);
-    if (i === sel){ selPos[0]=aPos[i*3]; selPos[1]=aPos[i*3+1]; selPos[2]=aPos[i*3+2]; }
-  }
-  aGeo.attributes.position.needsUpdate = true; aGeo.computeBoundingSphere();
-  selGeo.attributes.position.needsUpdate = true; selGeo.computeBoundingSphere();
-
-  // keep the limb framed at any flexion
-  var cx=0, cy=0, R=0;
-  for(i=0;i<=SEG;i++){ cx+=stX[i]; cy+=stY[i]; }
-  cx/=(SEG+1); cy/=(SEG+1);
-  target.set(cx, cy, 0);
-  for(i=0;i<=SEG;i++){ var d=Math.hypot(stX[i]-cx, stY[i]-cy); if(d>R) R=d; }
-  R += 0.17;
-  var hv = camera.fov*Math.PI/360;
-  var dist = (R/Math.tan(hv)) * 1.10;
-  var phiC = 1.18, sp = Math.sin(phiC);
-  camera.position.set(cx + dist*sp*Math.sin(theta), cy + dist*Math.cos(phiC), dist*sp*Math.cos(theta));
-  camera.lookAt(target);
-
-  renderer.render(scene, camera);
-
-  frames++;
-  var now = performance.now();
-  if (now - t0 >= 1000){
-    fpsEl.textContent = Math.round(frames*1000/(now-t0)) + " fps";
-    frames = 0; t0 = now;
-  }
-}
-tick();
 </script>
 </body>
 </html>
