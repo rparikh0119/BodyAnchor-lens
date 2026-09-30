@@ -90,19 +90,49 @@
   var swMsg = "not tested";
   var typed = "";
   var popCount = 0, lastPop = "none";
+  var sensorState = "off";
 
-  // ---- sensors registered IMMEDIATELY, with no user gesture --------------
-  // Meta's QA flags this. It is deliberate: it is the ORIENT probe's whole point.
-  window.addEventListener("deviceorientation", function(e){
+  // ---- sensors are registered ONLY from a user activation handler --------
+  // Meta's QA requires this, and it is the correct pattern for a real app.
+  function onOrient(e){
     orient = e;
     if(!gestureSeen) orientFiredClean = true;
-  });
-  window.addEventListener("devicemotion", function(){
+  }
+  function onMotion(){
     motionSeen = true;
     var t = performance.now();
     motionTimes.push(t);
     while(motionTimes.length && t - motionTimes[0] > 2000) motionTimes.shift();
-  });
+  }
+
+  function enableSensors(){
+    if(sensorState === "on" || sensorState === "asking") return;
+    sensorState = "asking";
+
+    function attach(){
+      window.addEventListener("deviceorientation", onOrient);
+      window.addEventListener("devicemotion", onMotion);
+      sensorState = "on";
+      render();
+    }
+
+    var needsOrient = typeof DeviceOrientationEvent !== "undefined"
+                   && typeof DeviceOrientationEvent.requestPermission === "function";
+    var needsMotion = typeof DeviceMotionEvent !== "undefined"
+                   && typeof DeviceMotionEvent.requestPermission === "function";
+
+    if(!needsOrient && !needsMotion){ attach(); return; }
+
+    var asks = [];
+    if(needsOrient) asks.push(DeviceOrientationEvent.requestPermission());
+    if(needsMotion) asks.push(DeviceMotionEvent.requestPermission());
+
+    Promise.all(asks).then(function(results){
+      // Denial is terminal. No retry loop, and the page stays usable.
+      if(results.every(function(r){ return r === "granted"; })){ attach(); }
+      else { sensorState = "denied"; render(); }
+    }).catch(function(){ sensorState = "denied"; render(); });
+  }
 
   // ---- fps ---------------------------------------------------------------
   function tick(){

@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=600, height=600, initial-scale=1, user-scalable=no">
+<meta name="description" content="BodyAnchor live resolve. Anchors stored as triangle index plus barycentric weights on a frozen MHR topology, resolved against the live mesh every pose change.">
+<meta name="mrbd-web-app-capable" content="yes">
+<link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGklEQVR42mOI//zqPyWYYdSAUQNGDRguBgAAUvE7LlhnxfgAAAAASUVORK5CYII=">
+<title>Body Anchor</title>
+<style>
+  html,body{margin:0;padding:0;background:#000;overflow:hidden;
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;}
+  #stage{position:relative;width:600px;height:600px;margin:0 auto;background:#000;outline:none;}
+  canvas{display:block;width:600px;height:600px;}
+  /* 18px floor and brighter inks. The additive display eats anything dim. */
+  .hud{position:absolute;color:#8FF3EA;font-size:18px;line-height:1.35;
+    letter-spacing:.02em;text-shadow:0 0 6px rgba(0,255,230,.35);}
+  #tl{top:20px;left:24px;}
+  #tr{top:20px;right:24px;text-align:right;}
+  #bl{bottom:20px;left:24px;max-width:380px;}
+  #br{bottom:20px;right:24px;text-align:right;color:#7FD4CC;font-size:18px;}
+  .k{color:#6FBFB8;}
+  .hi{color:#FFD34D;text-shadow:0 0 8px rgba(255,200,60,.5);}
+  .warn{color:#FF9B73;}
+  #stage:focus-visible{outline:3px solid #6BFF8F;outline-offset:-3px;}
+</style>
+</head>
+<body>
+<div id="stage" tabindex="0" role="application" aria-label="Body Anchor live resolve">
+  <canvas id="c" width="600" height="600"></canvas>
+  <div class="hud" id="tl"></div>
+  <div class="hud" id="tr"></div>
+  <div class="hud" id="bl"></div>
+  <div class="hud" id="br"></div>
+</div>
+<script src="armdata.js"></script>
+<script>
+(function(){
+  "use strict";
+  var D = window.ARM;
+  if(!D){ document.getElementById('tl').innerHTML='<span class="warn">armdata.js not loaded</span>'; return; }
+
+  function f32(b64){
+    var s=atob(b64), n=s.length, u=new Uint8Array(n);
+    for(var i=0;i<n;i++) u[i]=s.charCodeAt(i);
+    return new Float32Array(u.buffer);
+  }
+  function u16(b64){
+    var s=atob(b64), n=s.length, u=new Uint8Array(n);
+    for(var i=0;i<n;i++) u[i]=s.charCodeAt(i);
+    return new Uint16Array(u.buffer);
+  }
+
+  var POSE_KEYS = Object.keys(D.poses);
+  var POSES = POSE_KEYS.map(function(k){ return f32(D.poses[k]); });
+  var NAMES = POSE_KEYS.map(function(k){ return D.poseNames[k]; });
+  var IDX   = u16(D.index);
+  var NV    = D.verts;
+
+  var CUR = new Float32Array(NV*3);
+
+  var state = {
+    poseFrom: 0, poseTo: 0, blend: 1,
+    yaw: 0.35, pitch: -0.12,
+    anchor: 0,
+    spin: true
+  };
+
+  // Geometry only changes while a pose blend is running. Rotation is a camera
+  // change, not a mesh change, so the vertex buffer does not need rebuilding.
+  var meshDirty = true;
+
+  // ---- anchor resolve: triangle index + barycentric weights ----------------
+  // Nothing stores an XYZ. Position is always derived from the live buffer.
+  function resolve(a, out){
+    var t = a.triLocal, b = a.bary;
+    var i0=t[0]*3, i1=t[1]*3, i2=t[2]*3;
+    out[0] = CUR[i0  ]*b[0] + CUR[i1  ]*b[1] + CUR[i2  ]*b[2];
+    out[1] = CUR[i0+1]*b[0] + CUR[i1+1]*b[1] + CUR[i2+1]*b[2];
+    out[2] = CUR[i0+2]*b[0] + CUR[i1+2]*b[1] + CUR[i2+2]*b[2];
+    return out;
+  }
+
+  function buildCur(){
+    var A = POSES[state.poseFrom], B = POSES[state.poseTo], t = state.blend;
+    if(t>=1){ CUR.set(B); return; }
+    if(t<=0){ CUR.set(A); return; }
+    var s = t*t*(3-2*t);
+    for(var i=0;i<NV*3;i++) CUR[i] = A[i] + (B[i]-A[i])*s;
+  }
+
+  // ---- projection ----------------------------------------------------------
+  var cv = document.getElementById('c'), ctx = cv.getContext('2d');
+  var W=600, H=600, SCALE=225;
+  var proj = new Float32Array(NV*3);
+
+  // Depth buckets. Setting ctx.fillStyle per point meant building a string and
+  // parsing a CSS color 3,026 times a frame. Now it is set 8 times a frame.
+  var NB = 8;
+  var bucketOf = new Uint8Array(NV);
+  var bucketCount = new Int32Array(NB);
+  var bucketList = [];
+  for(var bi=0; bi<NB; bi++) bucketList.push(new Int32Array(NV));
+  var BUCKET_FILL = [];
+  for(var bi2=0; bi2<NB; bi2++){
+    var aA = 0.12 + (bi2/(NB-1))*0.62;
+    BUCKET_FILL.push('rgba(90,240,225,'+aA.toFixed(3)+')');
+  }
+
+  var zmin=0, zmax=0;
+
+  function project(){
+    var cy=Math.cos(state.yaw), sy=Math.sin(state.yaw);
+    var cp=Math.cos(state.pitch), sp=Math.sin(state.pitch);
+    var lo=1e9, hi=-1e9;
+    for(var i=0;i<NV;i++){
+      var x=CUR[i*3], y=CUR[i*3+1], z=CUR[i*3+2];
+      var x1 =  x*cy + z*sy;
+      var z1 = -x*sy + z*cy;
+      var y1 =  y*cp - z1*sp;
+      var z2 =  y*sp + z1*cp;
+      proj[i*3]   = W*0.5 + x1*SCALE;
+      proj[i*3+1] = H*0.5 - y1*SCALE;
+      proj[i*3+2] = z2;
+      if(z2<lo) lo=z2;
+      if(z2>hi) hi=z2;
+    }
+    zmin=lo; zmax=hi;
+
+    // bucket by depth in the same sweep budget, no per-point allocation
+    var zr = (hi-lo) || 1;
+    for(var b=0;b<NB;b++) bucketCount[b]=0;
+    for(var j=0;j<NV;j++){
+      var d = (proj[j*3+2]-lo)/zr;
+      var bk = (d*(NB-1) + 0.5)|0;
+      if(bk<0) bk=0; else if(bk>NB-1) bk=NB-1;
+      bucketOf[j]=bk;
+      bucketList[bk][bucketCount[bk]++] = j;
+    }
+  }
+
+  var ptmp = new Float32Array(3);
+  function projectPoint(p, out){
+    var cy=Math.cos(state.yaw), sy=Math.sin(state.yaw);
+    var cp=Math.cos(state.pitch), sp=Math.sin(state.pitch);
+    var x1 =  p[0]*cy + p[2]*sy;
+    var z1 = -p[0]*sy + p[2]*cy;
+    var y1 =  p[1]*cp - z1*sp;
+    var z2 =  p[1]*sp + z1*cp;
+    out[0] = W*0.5 + x1*SCALE;
+    out[1] = H*0.5 - y1*SCALE;
+    out[2] = z2;
+    return out;
+  }
+
+  // ---- draw ---------------------------------------------------------------
+  // Additive display: black is transparent. Bright marks on pure black only.
+  var tmp=[0,0,0];
+  var apos = new Float32Array(3);
+
+  function draw(){
+    ctx.fillStyle='#000';
+    ctx.fillRect(0,0,W,H);
+
+    // one fillStyle per depth bucket instead of one per point
+    for(var b=0;b<NB;b++){
+      var n = bucketCount[b];
+      if(!n) continue;
+      ctx.fillStyle = BUCKET_FILL[b];
+      var s = b >= 6 ? 1.7 : 1.1;
+      var half = s*0.5;
+      var list = bucketList[b];
+      for(var q=0;q<n;q++){
+        var i3 = list[q]*3;
+        ctx.fillRect(proj[i3]-half, proj[i3+1]-half, s, s);
+      }
+    }
+
+    ctx.lineWidth=0.5;
+    ctx.strokeStyle='rgba(60,180,175,0.38)';
+    ctx.beginPath();
+    for(var t=0;t<IDX.length;t+=33){
+      var a0=IDX[t]*3, b0=IDX[t+1]*3;
+      ctx.moveTo(proj[a0],proj[a0+1]);
+      ctx.lineTo(proj[b0],proj[b0+1]);
+    }
+    ctx.stroke();
+
+    for(var k=0;k<D.anchors.length;k++){
+      var a=D.anchors[k];
+      resolve(a,tmp);
+      projectPoint(tmp, apos);
+      var sel = (k===state.anchor);
+      var col = sel ? '255,211,77' : '255,140,110';
+      ctx.strokeStyle='rgba('+col+',0.95)';
+      ctx.lineWidth = sel?2.0:1.3;
+      var r = sel?10:7;
+      var px=apos[0], py=apos[1];
+      ctx.beginPath(); ctx.arc(px,py,r,0,6.2832); ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(px-r-6,py); ctx.lineTo(px-r+1,py);
+      ctx.moveTo(px+r-1,py); ctx.lineTo(px+r+6,py);
+      ctx.moveTo(px,py-r-6); ctx.lineTo(px,py-r+1);
+      ctx.moveTo(px,py+r-1); ctx.lineTo(px,py+r+6);
+      ctx.stroke();
+      if(sel){
+        ctx.fillStyle='rgba(255,211,77,0.98)';
+        ctx.font='17px ui-monospace,monospace';
+        ctx.fillText(a.id, px+r+10, py-r-4);
+      }
+    }
+  }
+
+  function hud(){
+    var a = D.anchors[state.anchor];
+    var poseName = NAMES[state.poseTo];
+    document.getElementById('tl').innerHTML =
+      'BODY ANCHOR<br><span class="k">pose</span> ' + poseName;
+    document.getElementById('tr').innerHTML =
+      '<span class="k">MHR</span> ' + D.verts.toLocaleString() + ' v';
+    var dr = a.driftMm || [];
+    document.getElementById('bl').innerHTML =
+      '<span class="hi">' + a.id + '</span> <span class="k">' + (a.site||'') + '</span><br>' +
+      '<span class="k">drift</span> ' +
+      (dr.length ? dr.map(function(x){return x.toFixed(1)+' mm';}).join(' <span class="k">/</span> ') : 'n/a') +
+      ' <span class="warn">provisional</span>';
+    document.getElementById('br').innerHTML =
+      '&#9664;&#9654; rotate<br>&#9650;&#9660; anchor<br>&#9166; pose';
+  }
+
+  // ---- input: D-pad only. No Escape anywhere. ----
+  var held = {};
+  window.addEventListener('keydown', function(e){
+    var k=e.key;
+    if(k==='ArrowLeft'||k==='ArrowRight'||k==='ArrowUp'||k==='ArrowDown'||k==='Enter'){
+      e.preventDefault();
+    }
+    if(k==='ArrowLeft'||k==='ArrowRight'){ held[k]=true; state.spin=false; }
+    if(k==='ArrowUp'){   state.anchor=(state.anchor+D.anchors.length-1)%D.anchors.length; hud(); }
+    if(k==='ArrowDown'){ state.anchor=(state.anchor+1)%D.anchors.length; hud(); }
+    if(k==='Enter'){
+      if(state.blend>=1){
+        state.poseFrom = state.poseTo;
+        state.poseTo   = (state.poseTo+1) % POSES.length;
+        state.blend    = 0;
+        meshDirty      = true;
+        hud();
+      }
+    }
+  });
+  window.addEventListener('keyup', function(e){ held[e.key]=false; });
+
+  // ---- loop, capped to the panel ------------------------------------------
+  // The display is a HARD 30Hz. Rendering faster is budget spent on frames
+  // nobody sees, and on a 2GHz part that shows up as dropped frames.
+  var FRAME_MS = 33;
+  var lastRender = 0, last = performance.now();
+  var fps=0, acc=0, frames=0;
+
+  function tick(now){
+    requestAnimationFrame(tick);
+    if(now - lastRender < FRAME_MS) return;
+
+    var dt = Math.min((now - last)/1000, 0.1);
+    last = now;
+    lastRender = now;
+    frames++; acc += dt;
+    if(acc>=0.5){ fps=Math.round(frames/acc); frames=0; acc=0; }
+
+    var moved = false;
+    if(held['ArrowLeft'])  { state.yaw -= dt*1.6; moved = true; }
+    if(held['ArrowRight']) { state.yaw += dt*1.6; moved = true; }
+    if(state.spin)         { state.yaw += dt*0.25; moved = true; }
+    if(state.blend<1){
+      state.blend = Math.min(1, state.blend + dt*0.9);
+      meshDirty = true;
+    }
+
+    // Only rebuild the mesh when the pose is actually moving.
+    if(meshDirty){
+      buildCur();
+      if(state.blend>=1) meshDirty = false;
+    }
+    if(meshDirty || moved) project();
+    draw();
+
+    ctx.fillStyle='rgba(120,210,205,0.9)';
+    ctx.font='17px ui-monospace,monospace';
+    ctx.fillText(fps+' fps', 262, 586);
+  }
+
+  document.getElementById('stage').focus();
+  buildCur(); project(); hud();
+  requestAnimationFrame(tick);
+})();
+</script>
+</body>
+</html>
