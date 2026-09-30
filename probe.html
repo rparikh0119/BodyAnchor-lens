@@ -3,6 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=600, height=600, initial-scale=1, user-scalable=no">
+<meta name="description" content="BodyAnchor on-glass capability probe. Measures D-pad input, text entry, sensors, frame rate, storage and back navigation on Meta Ray-Ban Display.">
+<meta name="mrbd-web-app-capable" content="yes">
+<link rel="icon" type="image/png" href="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAGklEQVR42mOI//zqPyWYYdSAUQNGDRguBgAAUvE7LlhnxfgAAAAASUVORK5CYII=">
 <title>BodyAnchor Probe</title>
 <style>
   :root{
@@ -23,6 +26,7 @@
     width:600px;height:600px;
     padding:54px 48px;
     display:flex;flex-direction:column;
+    outline:none;
   }
   #head{
     display:flex;justify-content:space-between;align-items:baseline;
@@ -38,15 +42,16 @@
   }
   .big{font-size:35px;font-weight:700;line-height:1.15;word-break:break-word}
   .mid{font-size:24px;line-height:1.35}
-  .lab{font-size:18px;color:var(--amber);letter-spacing:.05em}
+  .lab{font-size:19px;color:var(--amber);letter-spacing:.05em}
   .good{color:var(--good)}
   .bad{color:var(--bad)}
   .cy{color:var(--cyan)}
   #foot{
-    font-size:17px;color:var(--amber);
+    font-size:19px;color:var(--amber);
     border-top:2px solid var(--amber);
     padding-top:10px;line-height:1.3;
   }
+  .focusable:focus-visible{outline:3px solid var(--good);outline-offset:4px}
   input{
     width:100%;background:#000;color:var(--ink);
     border:3px solid var(--cyan);border-radius:6px;
@@ -57,8 +62,8 @@
 </style>
 </head>
 <body>
-<div id="wrap">
-  <div id="head"><span id="title">KEYS</span><span id="page">1/6</span></div>
+<div id="wrap" class="focusable" tabindex="0" role="application" aria-label="BodyAnchor probe">
+  <div id="head"><span id="title">KEYS</span><span id="page">1/7</span></div>
   <div id="body"></div>
   <div id="foot">UP DOWN change probe</div>
 </div>
@@ -71,21 +76,23 @@
   var title = document.getElementById("title");
   var pageEl= document.getElementById("page");
   var foot  = document.getElementById("foot");
+  var wrap  = document.getElementById("wrap");
 
   // ---- state collected by the probes -------------------------------------
-  var keys = [];              // recent key events
-  var orient = null;          // last DeviceOrientationEvent
-  var orientFiredClean = false; // fired before any user gesture?
+  var keys = [];
+  var orient = null;
+  var orientFiredClean = false;
   var gestureSeen = false;
-  var motionTimes = [];       // timestamps for rate measurement
+  var motionTimes = [];
   var motionSeen = false;
   var frames = [], fpsNow = 0, fpsMin = 999, fpsMax = 0;
   var storageMsg = "not tested";
   var swMsg = "not tested";
   var typed = "";
+  var popCount = 0, lastPop = "none";
 
   // ---- sensors registered IMMEDIATELY, with no user gesture --------------
-  // If these fire, permission is auto-granted on-glass.
+  // Meta's QA flags this. It is deliberate: it is the ORIENT probe's whole point.
   window.addEventListener("deviceorientation", function(e){
     orient = e;
     if(!gestureSeen) orientFiredClean = true;
@@ -117,11 +124,12 @@
     storageMsg = localStorage.getItem("probe") === "ok" ? "WORKS" : "readback failed";
   }catch(err){ storageMsg = "BLOCKED " + err.name; }
 
+  // Blob URLs are cross-origin to the page, which is why v1 threw TypeError.
+  // A real same-origin file is the only valid test.
   if("serviceWorker" in navigator){
-    var blob = new Blob(["self.addEventListener('install',function(){});"],{type:"text/javascript"});
-    navigator.serviceWorker.register(URL.createObjectURL(blob))
+    navigator.serviceWorker.register("sw.js")
       .then(function(){ swMsg = "REGISTERED"; })
-      .catch(function(e){ swMsg = "FAILED " + e.name; });
+      .catch(function(e){ swMsg = "FAILED " + (e.name || e.message); });
   } else {
     swMsg = "no serviceWorker in navigator";
   }
@@ -151,13 +159,23 @@
     draw:function(){
       return '<div class="lab">FOCUSED ELEMENT</div>'
            + '<div class="mid cy">'+esc(document.activeElement ? document.activeElement.tagName : "none")+'</div>'
-           + '<input id="ti" placeholder="focus me">'
+           + '<input id="ti" class="focusable" placeholder="focus me">'
            + '<div class="lab">RECEIVED</div>'
            + '<div class="mid good">'+ (typed ? esc(typed) : "nothing yet") +'</div>';
     },
     act:function(){
       var ti = document.getElementById("ti");
       if(ti){ ti.focus(); ti.oninput = function(){ typed = ti.value; }; }
+    }
+  },
+  {
+    name:"BACK",
+    hint:"Pinch thumb to MIDDLE finger. Does it fire popstate?",
+    draw:function(){
+      return '<div class="lab">POPSTATE EVENTS</div>'
+           + '<div class="big '+(popCount?"good":"bad")+'">'+popCount+'</div>'
+           + '<div class="mid">last: '+esc(lastPop)+'</div>'
+           + '<div class="mid cy">If this counts up, the system back gesture works and you do not need an on-screen Back.</div>';
     }
   },
   {
@@ -187,12 +205,12 @@
   },
   {
     name:"FPS",
-    hint:"Baseline with an near-empty DOM. Compare to the viewer.",
+    hint:"Panel is a HARD 30Hz. 30 is the ceiling, not 60.",
     draw:function(){
       return '<div class="lab">NOW</div>'
            + '<div class="big good">'+fpsNow+'</div>'
            + '<div class="mid">min '+(fpsMin===999?"-":fpsMin)+'   max '+(fpsMax||"-")+'</div>'
-           + '<div class="mid cy">viewer measured 13 to 27</div>';
+           + '<div class="mid cy">viewer measured 13 to 27 of 30</div>';
     }
   },
   {
@@ -214,7 +232,7 @@
   }
   function fmt(v){ return (v===null||v===undefined) ? "null" : Number(v).toFixed(1); }
 
-  // ---- paging ------------------------------------------------------------
+  // ---- paging, backed by real history entries ----------------------------
   var i = 0;
   function render(){
     var p = probes[i];
@@ -223,27 +241,41 @@
     body.innerHTML = p.draw();
     foot.textContent = p.hint;
   }
+  function go(n, push){
+    i = (n + probes.length) % probes.length;
+    if(push) history.pushState({i:i}, "", "#" + probes[i].name.toLowerCase());
+    render();
+  }
+
+  history.replaceState({i:0}, "", "#keys");
+  window.addEventListener("popstate", function(e){
+    popCount++;
+    lastPop = (e.state && typeof e.state.i === "number") ? probes[e.state.i].name : "no state";
+    if(e.state && typeof e.state.i === "number"){ i = e.state.i; }
+    render();
+  });
 
   document.addEventListener("keydown", function(e){
     gestureSeen = true;
     keys.push({key:e.key, code:e.code});
     if(keys.length > 40) keys.shift();
 
-    // While typing in the field, let the input have the keys.
     var inField = document.activeElement && document.activeElement.tagName === "INPUT";
     if(inField && e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
 
-    if(e.key === "ArrowDown"){ i = (i+1) % probes.length; if(inField) document.activeElement.blur(); render(); }
-    else if(e.key === "ArrowUp"){ i = (i-1+probes.length) % probes.length; if(inField) document.activeElement.blur(); render(); }
+    if(e.key === "ArrowDown"){ if(inField) document.activeElement.blur(); go(i+1, true); }
+    else if(e.key === "ArrowUp"){ if(inField) document.activeElement.blur(); go(i-1, true); }
     else if(e.key === "Enter" && probes[i].act){ probes[i].act(); }
   });
 
+  wrap.focus();
   render();
-  // Live probes need repainting. 4x a second is plenty and stays off the main thread budget.
+
+  // 30Hz panel. Repainting faster than the panel is wasted budget.
   setInterval(function(){
     if(document.activeElement && document.activeElement.tagName === "INPUT") return;
     render();
-  }, 250);
+  }, 333);
 })();
 </script>
 </body>
