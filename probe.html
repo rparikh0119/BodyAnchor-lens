@@ -1,0 +1,250 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=600, height=600, initial-scale=1, user-scalable=no">
+<title>BodyAnchor Probe</title>
+<style>
+  :root{
+    --ink:#ffffff;
+    --cyan:#5FF3EA;
+    --amber:#FFB454;
+    --good:#6BFF8F;
+    --bad:#FF7A7A;
+  }
+  *{margin:0;padding:0;box-sizing:border-box}
+  html,body{
+    width:600px;height:600px;overflow:hidden;
+    background:#000;color:var(--ink);
+    font-family:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+    -webkit-font-smoothing:antialiased;
+  }
+  #wrap{
+    width:600px;height:600px;
+    padding:54px 48px;
+    display:flex;flex-direction:column;
+  }
+  #head{
+    display:flex;justify-content:space-between;align-items:baseline;
+    font-size:21px;font-weight:700;letter-spacing:.06em;
+    color:var(--cyan);
+    border-bottom:2px solid var(--cyan);
+    padding-bottom:10px;
+  }
+  #page{color:var(--amber);font-size:19px}
+  #body{
+    flex:1;display:flex;flex-direction:column;justify-content:center;
+    gap:14px;padding:18px 0;
+  }
+  .big{font-size:35px;font-weight:700;line-height:1.15;word-break:break-word}
+  .mid{font-size:24px;line-height:1.35}
+  .lab{font-size:18px;color:var(--amber);letter-spacing:.05em}
+  .good{color:var(--good)}
+  .bad{color:var(--bad)}
+  .cy{color:var(--cyan)}
+  #foot{
+    font-size:17px;color:var(--amber);
+    border-top:2px solid var(--amber);
+    padding-top:10px;line-height:1.3;
+  }
+  input{
+    width:100%;background:#000;color:var(--ink);
+    border:3px solid var(--cyan);border-radius:6px;
+    font:inherit;font-size:27px;padding:12px 14px;
+    outline:none;
+  }
+  input:focus{border-color:var(--good)}
+</style>
+</head>
+<body>
+<div id="wrap">
+  <div id="head"><span id="title">KEYS</span><span id="page">1/6</span></div>
+  <div id="body"></div>
+  <div id="foot">UP DOWN change probe</div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  var body  = document.getElementById("body");
+  var title = document.getElementById("title");
+  var pageEl= document.getElementById("page");
+  var foot  = document.getElementById("foot");
+
+  // ---- state collected by the probes -------------------------------------
+  var keys = [];              // recent key events
+  var orient = null;          // last DeviceOrientationEvent
+  var orientFiredClean = false; // fired before any user gesture?
+  var gestureSeen = false;
+  var motionTimes = [];       // timestamps for rate measurement
+  var motionSeen = false;
+  var frames = [], fpsNow = 0, fpsMin = 999, fpsMax = 0;
+  var storageMsg = "not tested";
+  var swMsg = "not tested";
+  var typed = "";
+
+  // ---- sensors registered IMMEDIATELY, with no user gesture --------------
+  // If these fire, permission is auto-granted on-glass.
+  window.addEventListener("deviceorientation", function(e){
+    orient = e;
+    if(!gestureSeen) orientFiredClean = true;
+  });
+  window.addEventListener("devicemotion", function(){
+    motionSeen = true;
+    var t = performance.now();
+    motionTimes.push(t);
+    while(motionTimes.length && t - motionTimes[0] > 2000) motionTimes.shift();
+  });
+
+  // ---- fps ---------------------------------------------------------------
+  function tick(){
+    var t = performance.now();
+    frames.push(t);
+    while(frames.length && t - frames[0] > 1000) frames.shift();
+    fpsNow = frames.length;
+    if(fpsNow > 0 && t > 3000){
+      if(fpsNow < fpsMin) fpsMin = fpsNow;
+      if(fpsNow > fpsMax) fpsMax = fpsNow;
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+
+  // ---- storage + service worker -----------------------------------------
+  try{
+    localStorage.setItem("probe","ok");
+    storageMsg = localStorage.getItem("probe") === "ok" ? "WORKS" : "readback failed";
+  }catch(err){ storageMsg = "BLOCKED " + err.name; }
+
+  if("serviceWorker" in navigator){
+    var blob = new Blob(["self.addEventListener('install',function(){});"],{type:"text/javascript"});
+    navigator.serviceWorker.register(URL.createObjectURL(blob))
+      .then(function(){ swMsg = "REGISTERED"; })
+      .catch(function(e){ swMsg = "FAILED " + e.name; });
+  } else {
+    swMsg = "no serviceWorker in navigator";
+  }
+
+  // ---- probes ------------------------------------------------------------
+  var probes = [
+  {
+    name:"KEYS",
+    hint:"Pinch = Enter. Swipe thumb on index = arrows.",
+    draw:function(){
+      if(!keys.length){
+        return '<div class="big cy">waiting...</div>'
+             + '<div class="mid">Try a pinch, then a thumb swipe along the side of your index finger.</div>';
+      }
+      var last = keys[keys.length-1];
+      var hist = keys.slice(-5).map(function(k){ return k.key; }).join("  ");
+      return '<div class="lab">LAST</div>'
+           + '<div class="big good">'+esc(last.key)+'</div>'
+           + '<div class="mid">code '+esc(last.code)+'</div>'
+           + '<div class="lab">RECENT</div>'
+           + '<div class="mid cy">'+esc(hist)+'</div>';
+    }
+  },
+  {
+    name:"TEXT",
+    hint:"ENTER focuses the field. Does dictation or handwriting open?",
+    draw:function(){
+      return '<div class="lab">FOCUSED ELEMENT</div>'
+           + '<div class="mid cy">'+esc(document.activeElement ? document.activeElement.tagName : "none")+'</div>'
+           + '<input id="ti" placeholder="focus me">'
+           + '<div class="lab">RECEIVED</div>'
+           + '<div class="mid good">'+ (typed ? esc(typed) : "nothing yet") +'</div>';
+    },
+    act:function(){
+      var ti = document.getElementById("ti");
+      if(ti){ ti.focus(); ti.oninput = function(){ typed = ti.value; }; }
+    }
+  },
+  {
+    name:"ORIENT",
+    hint:"Fired with no gesture? That answers the permission question.",
+    draw:function(){
+      if(!orient) return '<div class="big bad">NO EVENTS</div>'
+                       + '<div class="mid">DeviceOrientationEvent has not fired. Permission likely required.</div>';
+      return '<div class="lab">NO-GESTURE FIRE</div>'
+           + '<div class="big '+(orientFiredClean?"good":"bad")+'">'+(orientFiredClean?"YES":"NO")+'</div>'
+           + '<div class="mid">alpha '+fmt(orient.alpha)+'</div>'
+           + '<div class="mid">beta&nbsp; '+fmt(orient.beta)+'</div>'
+           + '<div class="mid">gamma '+fmt(orient.gamma)+'</div>';
+    }
+  },
+  {
+    name:"MOTION",
+    hint:"Undocumented rate. This measures it.",
+    draw:function(){
+      if(!motionSeen) return '<div class="big bad">NO EVENTS</div>'
+                           + '<div class="mid">DeviceMotionEvent has not fired.</div>';
+      var hz = motionTimes.length / 2;
+      return '<div class="lab">EVENT RATE</div>'
+           + '<div class="big good">'+hz.toFixed(1)+' Hz</div>'
+           + '<div class="mid">'+motionTimes.length+' events in 2s</div>';
+    }
+  },
+  {
+    name:"FPS",
+    hint:"Baseline with an near-empty DOM. Compare to the viewer.",
+    draw:function(){
+      return '<div class="lab">NOW</div>'
+           + '<div class="big good">'+fpsNow+'</div>'
+           + '<div class="mid">min '+(fpsMin===999?"-":fpsMin)+'   max '+(fpsMax||"-")+'</div>'
+           + '<div class="mid cy">viewer measured 13 to 27</div>';
+    }
+  },
+  {
+    name:"STORE",
+    hint:"Docs said offline was unsupported. Connect said otherwise.",
+    draw:function(){
+      return '<div class="lab">LOCALSTORAGE</div>'
+           + '<div class="mid '+(storageMsg==="WORKS"?"good":"bad")+'">'+esc(storageMsg)+'</div>'
+           + '<div class="lab">SERVICE WORKER</div>'
+           + '<div class="mid '+(swMsg==="REGISTERED"?"good":"bad")+'">'+esc(swMsg)+'</div>';
+    }
+  }];
+
+  // ---- helpers -----------------------------------------------------------
+  function esc(s){
+    return String(s).replace(/[&<>"']/g, function(c){
+      return {"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c];
+    });
+  }
+  function fmt(v){ return (v===null||v===undefined) ? "null" : Number(v).toFixed(1); }
+
+  // ---- paging ------------------------------------------------------------
+  var i = 0;
+  function render(){
+    var p = probes[i];
+    title.textContent = p.name;
+    pageEl.textContent = (i+1) + "/" + probes.length;
+    body.innerHTML = p.draw();
+    foot.textContent = p.hint;
+  }
+
+  document.addEventListener("keydown", function(e){
+    gestureSeen = true;
+    keys.push({key:e.key, code:e.code});
+    if(keys.length > 40) keys.shift();
+
+    // While typing in the field, let the input have the keys.
+    var inField = document.activeElement && document.activeElement.tagName === "INPUT";
+    if(inField && e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+
+    if(e.key === "ArrowDown"){ i = (i+1) % probes.length; if(inField) document.activeElement.blur(); render(); }
+    else if(e.key === "ArrowUp"){ i = (i-1+probes.length) % probes.length; if(inField) document.activeElement.blur(); render(); }
+    else if(e.key === "Enter" && probes[i].act){ probes[i].act(); }
+  });
+
+  render();
+  // Live probes need repainting. 4x a second is plenty and stays off the main thread budget.
+  setInterval(function(){
+    if(document.activeElement && document.activeElement.tagName === "INPUT") return;
+    render();
+  }, 250);
+})();
+</script>
+</body>
+</html>
