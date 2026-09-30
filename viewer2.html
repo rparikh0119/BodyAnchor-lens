@@ -69,6 +69,7 @@
   // Geometry only changes while a pose blend is running. Rotation is a camera
   // change, not a mesh change, so the vertex buffer does not need rebuilding.
   var meshDirty = true;
+  var needsDraw = true;   // forces a repaint when only the selection changed
 
   // ---- anchor resolve: triangle index + barycentric weights ----------------
   // Nothing stores an XYZ. Position is always derived from the live buffer.
@@ -162,17 +163,20 @@
     ctx.fillStyle='#000';
     ctx.fillRect(0,0,W,H);
 
-    // one fillStyle per depth bucket instead of one per point
+    // One fillStyle per depth bucket instead of one per point. Two reasons:
+    // the string build plus CSS parse, and the fact that a paint change breaks
+    // the canvas backend's ability to batch consecutive fillRects into one op.
+    // Integer positions AND integer sizes, so no rect gets antialiased edge
+    // coverage. On a CPU rasterizer that is real money at 3,026 rects.
     for(var b=0;b<NB;b++){
       var n = bucketCount[b];
       if(!n) continue;
       ctx.fillStyle = BUCKET_FILL[b];
-      var s = b >= 6 ? 1.7 : 1.1;
-      var half = s*0.5;
+      var s = b >= 6 ? 2 : 1;
       var list = bucketList[b];
       for(var q=0;q<n;q++){
         var i3 = list[q]*3;
-        ctx.fillRect(proj[i3]-half, proj[i3+1]-half, s, s);
+        ctx.fillRect((proj[i3]+0.5)|0, (proj[i3+1]+0.5)|0, s, s);
       }
     }
 
@@ -236,8 +240,8 @@
       e.preventDefault();
     }
     if(k==='ArrowLeft'||k==='ArrowRight'){ held[k]=true; state.spin=false; }
-    if(k==='ArrowUp'){   state.anchor=(state.anchor+D.anchors.length-1)%D.anchors.length; hud(); }
-    if(k==='ArrowDown'){ state.anchor=(state.anchor+1)%D.anchors.length; hud(); }
+    if(k==='ArrowUp'){   state.anchor=(state.anchor+D.anchors.length-1)%D.anchors.length; hud(); needsDraw=true; }
+    if(k==='ArrowDown'){ state.anchor=(state.anchor+1)%D.anchors.length; hud(); needsDraw=true; }
     if(k==='Enter'){
       if(state.blend>=1){
         state.poseFrom = state.poseTo;
@@ -264,8 +268,6 @@
     var dt = Math.min((now - last)/1000, 0.1);
     last = now;
     lastRender = now;
-    frames++; acc += dt;
-    if(acc>=0.5){ fps=Math.round(frames/acc); frames=0; acc=0; }
 
     var moved = false;
     if(held['ArrowLeft'])  { state.yaw -= dt*1.6; moved = true; }
@@ -276,12 +278,24 @@
       meshDirty = true;
     }
 
-    // Only rebuild the mesh when the pose is actually moving.
+    // Only rebuild the mesh while a pose blend is actually running.
+    var rebuilt = false;
     if(meshDirty){
       buildCur();
+      rebuilt = true;
       if(state.blend>=1) meshDirty = false;
     }
-    if(meshDirty || moved) project();
+
+    // Nothing changed means nothing to draw. Without this the loop repaints an
+    // identical frame 30 times a second forever, which on a battery-powered
+    // head-mounted device is pure waste.
+    if(!(rebuilt || moved || needsDraw)) return;
+    needsDraw = false;
+
+    frames++; acc += dt;
+    if(acc>=0.5){ fps=Math.round(frames/acc); frames=0; acc=0; }
+
+    if(rebuilt || moved) project();
     draw();
 
     ctx.fillStyle='rgba(120,210,205,0.9)';
